@@ -8,7 +8,6 @@ import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp
 import { supabase } from "@/integrations/supabase/client";
 import { lovable } from "@/integrations/lovable/index";
 import { useToast } from "@/hooks/use-toast";
-import darylLogo from "@/assets/daryltech-auth-logo.jpg";
 
 /* Drifting network that echoes the logo (red, gold, green, white nodes). */
 const NetworkArt = () => {
@@ -305,7 +304,7 @@ const Auth = () => {
             One network for learning, building and sharing.
           </h2>
           <p className="text-sm text-white/70">
-            Read research, follow projects and learn alongside other students.
+            Read research, follow projects and learn alongside other students. Join Daryl Tech & Educational Network to read research, follow projects and learn alongside other students.
           </p>
         </div>
       </motion.div>
