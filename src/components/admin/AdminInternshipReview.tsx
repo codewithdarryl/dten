@@ -98,3 +98,59 @@ const AdminInternshipReview = () => {
             <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
             <Input className="h-9 pl-8" placeholder="Search name, email, track" value={search} onChange={(e) => setSearch(e.target.value)} />
           </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {loading ? (
+          <div className="py-8 text-center"><Loader2 className="mx-auto h-5 w-5 animate-spin" /></div>
+        ) : shown.length === 0 ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">No applications here.</p>
+        ) : (
+          <div className="space-y-3">
+            {shown.map((a) => {
+              const s = simpleStatus(a.status);
+              return (
+                <div key={a.id} className="rounded-lg border border-border p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="font-medium">{a.full_name}</p>
+                      <p className="text-xs text-muted-foreground break-all">{a.email} · {a.track} · applied {new Date(a.created_at).toLocaleDateString()}</p>
+                    </div>
+                    <Badge variant="outline" className={statusClass[s]}>{statusLabel[s]}</Badge>
+                  </div>
+                  {a.status_reason && (
+                    <p className="mt-2 rounded-md bg-muted/50 p-2 text-sm"><span className="text-muted-foreground">Reason: </span>{a.status_reason}</p>
+                  )}
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button size="sm" variant="outline" onClick={() => open(a, "approved")}>Approve</Button>
+                    <Button size="sm" variant="outline" onClick={() => open(a, "rejected")}>Reject</Button>
+                    {s !== "pending" && <Button size="sm" variant="ghost" onClick={() => open(a, "pending")}>Move to pending</Button>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </CardContent>
+
+      <Dialog open={!!deciding} onOpenChange={(o) => !o && setDeciding(null)}>
+        <DialogContent className="w-[95vw] max-w-md">
+          <DialogHeader>
+            <DialogTitle>{deciding && `${statusLabel[deciding.status]}: ${deciding.app.full_name}`}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label>Reason {deciding?.status === "pending" ? "(optional)" : "(the applicant will see this)"}</Label>
+            <Textarea rows={4} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)}
+              placeholder={deciding?.status === "approved" ? "e.g. Strong portfolio — welcome to the Web track." : "e.g. We need more project experience. Please reapply next cohort."} />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeciding(null)}>Cancel</Button>
+            <Button onClick={save} disabled={saving}>{saving && <Loader2 size={14} className="mr-1 animate-spin" />}Save</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Card>
+  );
+};
+
+export default AdminInternshipReview;
