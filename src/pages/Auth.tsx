@@ -1,94 +1,51 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Check, X } from "lucide-react";
+import { z } from "zod";
+import { invokeFn } from "@/lib/functions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import { supabase } from "@/integrations/supabase/client";
 import { lovable } from "@/integrations/lovable/index";
 import { useToast } from "@/hooks/use-toast";
-import darylLogo from "@/assets/daryltech-auth-logo.jpg";
+import darylLogo from "@/assets/daryl-tech-logo.png";
 
-/* Drifting network that echoes the logo (red, gold, green, white nodes). */
-const NetworkArt = () => {
-  const ref = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const cv = ref.current!;
-    const ctx = cv.getContext("2d")!;
-    const cols = ["#e5231b", "#ffb300", "#2e9e3f", "#ffffff"];
-    let w = 0, h = 0, raf = 0;
-    const nodes = Array.from({ length: 34 }, (_, i) => ({
-      x: Math.random(), y: Math.random(),
-      vx: (Math.random() - 0.5) * 0.0004, vy: (Math.random() - 0.5) * 0.0004,
-      c: cols[i % 4], r: i % 5 === 0 ? 5 : 3,
-    }));
-    const resize = () => {
-      const p = cv.parentElement!, d = window.devicePixelRatio || 1;
-      w = p.clientWidth; h = p.clientHeight;
-      cv.width = w * d; cv.height = h * d;
-      ctx.setTransform(d, 0, 0, d, 0, 0);
-    };
-    const draw = () => {
-      ctx.clearRect(0, 0, w, h);
-      const max = Math.min(w, h) * 0.28;
-      ctx.lineWidth = 1.2;
-      nodes.forEach((a, i) => {
-        nodes.slice(i + 1).forEach((b) => {
-          const d = Math.hypot((a.x - b.x) * w, (a.y - b.y) * h);
-          if (d < max) {
-            ctx.globalAlpha = (1 - d / max) * 0.7;
-            ctx.strokeStyle = a.c;
-            ctx.beginPath(); ctx.moveTo(a.x * w, a.y * h); ctx.lineTo(b.x * w, b.y * h); ctx.stroke();
-          }
-        });
-      });
-      ctx.globalAlpha = 1;
-      nodes.forEach((n) => {
-        ctx.fillStyle = n.c;
-        ctx.beginPath(); ctx.arc(n.x * w, n.y * h, n.r, 0, 7); ctx.fill();
-      });
-    };
-    const tick = () => {
-      nodes.forEach((n) => {
-        n.x += n.vx; n.y += n.vy;
-        if (n.x < 0 || n.x > 1) n.vx *= -1;
-        if (n.y < 0 || n.y > 1) n.vy *= -1;
-      });
-      draw();
-      raf = requestAnimationFrame(tick);
-    };
-    resize(); draw();
-    const ro = new ResizeObserver(() => { resize(); draw(); });
-    ro.observe(cv.parentElement!);
-    if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) raf = requestAnimationFrame(tick);
-    return () => { cancelAnimationFrame(raf); ro.disconnect(); };
-  }, []);
-  return <canvas ref={ref} aria-hidden="true" className="absolute inset-0 h-full w-full" />;
-};
+
+const PW_RULES = [
+  { test: (p: string) => p.length >= 8, label: "At least 8 characters" },
+  { test: (p: string) => /[A-Z]/.test(p), label: "One capital letter" },
+  { test: (p: string) => /[0-9]/.test(p), label: "One number" },
+  { test: (p: string) => /[^A-Za-z0-9]/.test(p), label: "One special character" },
+];
+
+const signupSchema = z.object({
+  fullName: z.string().trim().min(2, "Enter your full name.").max(120),
+  username: z.string().trim().toLowerCase().regex(/^[a-z0-9_.]{3,30}$/, "Username: 3–30 letters, numbers, dots or underscores."),
+  email: z.string().trim().email("Enter a valid email.").max(255),
+  phone: z.string().trim().regex(/^\+?[0-9 ()-]{7,20}$/, "Enter a valid phone number."),
+  password: z.string().max(72).refine((p) => PW_RULES.every((r) => r.test(p)), "Password doesn't meet all the rules."),
+  repeat: z.string(),
+}).refine((d) => d.password === d.repeat, { message: "Passwords don't match.", path: ["repeat"] });
 
 const Auth = () => {
   const [isLogin, setIsLogin] = useState(true);
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
-  const [displayName, setDisplayName] = useState("");
+  const [form, setForm] = useState({ fullName: "", username: "", email: "", phone: "", password: "", repeat: "" });
+  const [usernameFree, setUsernameFree] = useState<boolean | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [appleLoading, setAppleLoading] = useState(false);
-  const [otpStep, setOtpStep] = useState(false);
-  const [otpCode, setOtpCode] = useState("");
-  const [resendCooldown, setResendCooldown] = useState(0);
-  const [resending, setResending] = useState(false);
-  const [loginWithOtp, setLoginWithOtp] = useState(false);
+  // Email-code login
+  const [mode, setMode] = useState<"password" | "code">("password");
+  const [codeStep, setCodeStep] = useState<"email" | "verify">("email");
+  const [codeEmail, setCodeEmail] = useState("");
+  const [otp, setOtp] = useState("");
+  const [cooldown, setCooldown] = useState(0);
   const { toast } = useToast();
   const navigate = useNavigate();
-
-  useEffect(() => {
-    if (resendCooldown <= 0) return;
-    const t = setInterval(() => setResendCooldown((s) => Math.max(0, s - 1)), 1000);
-    return () => clearInterval(t);
-  }, [resendCooldown]);
 
   const safeRedirect = () => {
     const r = new URLSearchParams(window.location.search).get("redirect");
@@ -99,39 +56,25 @@ const Auth = () => {
     return r ? `${window.location.origin}/auth?redirect=${encodeURIComponent(r)}` : window.location.origin;
   };
 
-  const startCooldown = (seconds = 45) => setResendCooldown(seconds);
+  // Live username availability check
+  useEffect(() => {
+    const u = form.username.trim().toLowerCase();
+    if (isLogin || !/^[a-z0-9_.]{3,30}$/.test(u)) { setUsernameFree(null); return; }
+    const t = setTimeout(async () => {
+      try {
+        const r = await invokeFn<{ available: boolean }>("auth-helper", { action: "check_username", username: u });
+        setUsernameFree(r.available);
+      } catch { setUsernameFree(null); }
+    }, 450);
+    return () => clearTimeout(t);
+  }, [form.username, isLogin]);
 
-  const friendlyOtpError = (msg: string) => {
-    const m = msg?.toLowerCase() || "";
-    if (m.includes("expired")) return "That code has expired. Tap Resend to get a fresh one.";
-    if (m.includes("invalid") || m.includes("token")) return "That code didn't match. Double-check the 6 digits or resend.";
-    if (m.includes("rate") || m.includes("too many")) return "Too many attempts. Wait a moment and try again.";
-    if (m.includes("used")) return "That code was already used. Resend a new one.";
-    return msg || "Something went wrong. Try resending the code.";
-  };
-
-  const handleResendOtp = async () => {
-    if (resendCooldown > 0 || resending) return;
-    setResending(true);
-    try {
-      const { error } = await supabase.auth.signInWithOtp({
-        email,
-        options: {
-          shouldCreateUser: !isLogin,
-          data: isLogin ? undefined : { display_name: displayName },
-          emailRedirectTo: authReturnUrl(),
-        },
-      });
-      if (error) throw error;
-      startCooldown(45);
-      setOtpCode("");
-      toast({ title: "Code resent", description: `A new code is on its way to ${email}.` });
-    } catch (err: any) {
-      toast({ title: "Couldn't resend", description: err.message, variant: "destructive" });
-    } finally {
-      setResending(false);
-    }
-  };
+  // Resend cooldown timer
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const t = setTimeout(() => setCooldown((c) => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [cooldown]);
 
   useEffect(() => {
     const routeUser = async (userId: string) => {
@@ -151,20 +94,9 @@ const Auth = () => {
       else navigate("/student/dashboard");
     };
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (!session) return;
-      if (event === "SIGNED_IN") {
-        const { data: existingProfile } = await supabase
-          .from("profiles").select("id").eq("user_id", session.user.id).maybeSingle();
-        if (!existingProfile) {
-          await supabase.from("profiles").insert({
-            user_id: session.user.id,
-            display_name: session.user.user_metadata?.display_name || session.user.user_metadata?.full_name || session.user.email?.split("@")[0],
-            email: session.user.email,
-          });
-        }
-      }
-      routeUser(session.user.id);
+      if (event === "SIGNED_IN") setTimeout(() => routeUser(session.user.id), 0);
     });
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session) routeUser(session.user.id);
@@ -172,73 +104,99 @@ const Auth = () => {
     return () => subscription.unsubscribe();
   }, [navigate]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const signInWithTokens = async (identifierValue: string, pw: string) => {
+    const r = await invokeFn<{ access_token: string; refresh_token: string }>("auth-helper", {
+      action: "login", identifier: identifierValue, password: pw,
+    });
+    const { error } = await supabase.auth.setSession(r);
+    if (error) throw error;
+  };
+
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!identifier.trim() || !password) return;
     setLoading(true);
     try {
-      if (isLogin && !loginWithOtp) {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-      } else if (isLogin && loginWithOtp) {
-        const { error } = await supabase.auth.signInWithOtp({
-          email,
-          options: { shouldCreateUser: false, emailRedirectTo: authReturnUrl() },
-        });
-        if (error) throw error;
-        setOtpStep(true);
-        startCooldown(45);
-        toast({ title: "Code sent", description: `We emailed a 6-digit login code to ${email}.` });
-      } else {
-        const { error } = await supabase.auth.signInWithOtp({
-          email,
-          options: {
-            shouldCreateUser: true,
-            data: { display_name: displayName },
-            emailRedirectTo: authReturnUrl(),
-          },
-        });
-        if (error) throw error;
-        setOtpStep(true);
-        startCooldown(45);
-        toast({ title: "Code sent", description: `We emailed a 6-digit code to ${email}.` });
-      }
+      await signInWithTokens(identifier.trim(), password);
     } catch (err: any) {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      toast({ title: "Couldn't log in", description: err.message, variant: "destructive" });
     } finally {
       setLoading(false);
     }
   };
 
-  const handleVerifyOtp = async (e?: React.FormEvent) => {
+  // Step 1 of email-code login: request a 6-digit code.
+  // shouldCreateUser is false on purpose: accounts must be created through the
+  // sign-up form so the username/profile rows exist.
+  const sendCode = async (e?: React.FormEvent) => {
     e?.preventDefault();
-    if (otpCode.length !== 6 || loading) return;
+    const parsed = z.string().trim().email().max(255).safeParse(codeEmail);
+    if (!parsed.success) {
+      toast({ title: "Check your email", description: "Enter a valid email address.", variant: "destructive" });
+      return;
+    }
     setLoading(true);
     try {
-      const { data, error } = await supabase.auth.verifyOtp({
-        email,
-        token: otpCode,
-        type: "email",
+      const { error } = await supabase.auth.signInWithOtp({
+        email: parsed.data,
+        options: { shouldCreateUser: false },
       });
-      if (error) throw error;
-      if (!isLogin && password && data.user) {
-        const { error: pwErr } = await supabase.auth.updateUser({ password });
-        if (pwErr) console.warn("Password set failed:", pwErr.message);
-      }
-      toast({ title: "Account verified", description: "Welcome aboard!" });
+      // Only surface rate limits; otherwise stay generic so we don't reveal which emails have accounts.
+      if (error && error.status === 429) throw new Error("Too many requests. Please wait a minute and try again.");
+      setCodeStep("verify");
+      setOtp("");
+      setCooldown(60);
+      toast({ title: "Check your email", description: "If an account exists for that email, we've sent a 6-digit code." });
     } catch (err: any) {
-      toast({ title: "Invalid code", description: friendlyOtpError(err.message), variant: "destructive" });
-      setOtpCode("");
+      toast({ title: "Couldn't send code", description: err.message, variant: "destructive" });
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    if (otpStep && otpCode.length === 6 && !loading) {
-      handleVerifyOtp();
+  // Step 2: verify the code. On success onAuthStateChange fires and routeUser redirects.
+  const verifyCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!/^\d{6}$/.test(otp)) {
+      toast({ title: "Enter the code", description: "The code is 6 digits.", variant: "destructive" });
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [otpCode, otpStep]);
+    setLoading(true);
+    try {
+      const { error } = await supabase.auth.verifyOtp({ email: codeEmail.trim(), token: otp, type: "email" });
+      if (error) throw error;
+    } catch {
+      toast({ title: "Invalid or expired code", description: "Check the code or request a new one.", variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSignup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const parsed = signupSchema.safeParse(form);
+    if (!parsed.success) {
+      toast({ title: "Check your details", description: parsed.error.issues[0].message, variant: "destructive" });
+      return;
+    }
+    if (usernameFree === false) {
+      toast({ title: "Username taken", description: "Please choose another username.", variant: "destructive" });
+      return;
+    }
+    setLoading(true);
+    try {
+      const d = parsed.data;
+      await invokeFn("auth-helper", {
+        action: "signup", full_name: d.fullName, username: d.username, email: d.email, phone: d.phone, password: d.password,
+      });
+      await signInWithTokens(d.email, d.password);
+      toast({ title: "Welcome to Daryl Tech!", description: "Your account is ready. Verify your email from your dashboard." });
+    } catch (err: any) {
+      toast({ title: "Sign-up failed", description: err.message, variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleGoogleSignIn = async () => {
     setGoogleLoading(true);
@@ -282,32 +240,22 @@ const Auth = () => {
       >
         <ArrowLeft size={13} /> Back to website
       </Link>
-
-      {/* Left panel (redesigned) */}
+      {/* Left panel */}
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.8 }}
-        className="relative hidden w-[55%] items-center justify-center overflow-hidden lg:flex"
-        style={{ background: "#031b4a" }}
+        className="hidden w-[55%] items-center justify-center lg:flex"
+        style={{ background: "hsl(215, 40%, 12%)" }}
       >
-        <NetworkArt />
         <motion.img
           src={darylLogo}
           alt="Daryl Tech & Educational Network"
-          className="relative z-10 w-[60%] max-w-[360px] select-none rounded-xl shadow-2xl"
+          className="max-w-[420px] w-[70%] select-none"
           initial={{ scale: 0.9, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           transition={{ duration: 0.8, delay: 0.2 }}
         />
-        <div className="absolute inset-x-12 bottom-12 z-10 max-w-sm text-white">
-          <h2 className="mb-2 text-3xl font-extrabold leading-tight tracking-tight">
-            One network for learning, building and sharing.
-          </h2>
-          <p className="text-sm text-white/70">
-            Read research, follow projects and learn alongside other students. Join Daryl Tech & Educational Network to read research, follow projects and learn alongside other students.
-          </p>
-        </div>
       </motion.div>
 
       {/* Right panel */}
@@ -380,7 +328,7 @@ const Auth = () => {
           {/* Tabs */}
           <div className="mb-6 flex rounded-lg border border-border bg-card p-1">
             <button
-              onClick={() => setIsLogin(true)}
+              onClick={() => { setIsLogin(true); setMode("password"); }}
               className={`flex-1 rounded-md py-2 text-sm font-medium transition-all ${
                 isLogin ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
               }`}
@@ -399,130 +347,120 @@ const Auth = () => {
 
           {/* Form */}
           <AnimatePresence mode="wait">
-            {otpStep ? (
-              <motion.form
-                key="otp"
-                variants={formVariants}
-                initial="hidden"
-                animate="visible"
-                exit="exit"
-                onSubmit={handleVerifyOtp}
-                className="space-y-4"
-              >
-                <p className="text-center text-sm text-muted-foreground">
-                  Enter the 6-digit code we sent to <span className="font-medium text-foreground">{email}</span>
-                </p>
-                <div className="flex justify-center">
-                  <InputOTP autoFocus maxLength={6} value={otpCode} onChange={setOtpCode} disabled={loading}>
-                    <InputOTPGroup>
-                      {[0, 1, 2, 3, 4, 5].map((i) => (
-                        <InputOTPSlot key={i} index={i} />
-                      ))}
-                    </InputOTPGroup>
-                  </InputOTP>
-                </div>
-                <Button type="submit" className="w-full rounded-lg py-5 text-sm font-semibold" disabled={loading || otpCode.length !== 6}>
-                  {loading ? "Verifying..." : "Verify & continue"}
-                </Button>
-                <div className="flex flex-col items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={handleResendOtp}
-                    disabled={resendCooldown > 0 || resending}
-                    className="text-xs font-medium text-primary hover:underline disabled:text-muted-foreground disabled:no-underline disabled:cursor-not-allowed"
-                  >
-                    {resending
-                      ? "Resending..."
-                      : resendCooldown > 0
-                      ? `Resend code in ${resendCooldown}s`
-                      : "Resend code"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { setOtpStep(false); setOtpCode(""); setResendCooldown(0); }}
-                    className="text-xs text-muted-foreground hover:text-foreground"
-                  >
-                    Use a different email
-                  </button>
-                </div>
-              </motion.form>
-            ) : (
-              <motion.form
-                key={isLogin ? "login" : "signup"}
-                variants={formVariants}
-                initial="hidden"
-                animate="visible"
-                exit="exit"
-                onSubmit={handleSubmit}
-                className="space-y-4"
-              >
-                {!isLogin && (
-                  <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} transition={{ duration: 0.3 }}>
-                    <Input
-                      value={displayName}
-                      onChange={(e) => setDisplayName(e.target.value)}
-                      placeholder="display name"
-                      className="rounded-lg border-border bg-card py-5 text-sm placeholder:text-muted-foreground"
-                    />
-                  </motion.div>
+            {isLogin && mode === "code" ? (
+              <motion.form key="code" variants={formVariants} initial="hidden" animate="visible" exit="exit"
+                onSubmit={codeStep === "email" ? sendCode : verifyCode} className="space-y-4">
+                {codeStep === "email" ? (
+                  <>
+                    <Input type="email" value={codeEmail} onChange={(e) => setCodeEmail(e.target.value)} placeholder="Email"
+                      autoComplete="email" required maxLength={255} className="rounded-lg border-border bg-card py-5 text-sm placeholder:text-muted-foreground" />
+                    <Button type="submit" className="w-full rounded-lg py-5 text-sm font-semibold" disabled={loading}>
+                      {loading ? "Sending..." : "Send me a code"}
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-center text-xs text-muted-foreground">
+                      Enter the 6-digit code sent to <span className="font-medium text-foreground">{codeEmail}</span>
+                    </p>
+                    <Input value={otp} onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="000000"
+                      inputMode="numeric" autoComplete="one-time-code" maxLength={6} required
+                      className="rounded-lg border-border bg-card py-5 text-center text-lg tracking-[0.5em] placeholder:text-muted-foreground" />
+                    <Button type="submit" className="w-full rounded-lg py-5 text-sm font-semibold" disabled={loading}>
+                      {loading ? "Verifying..." : "Verify and log in"}
+                    </Button>
+                    <div className="flex items-center justify-between text-xs">
+                      <button type="button" onClick={() => { setCodeStep("email"); setOtp(""); }} className="text-muted-foreground hover:text-foreground">
+                        Change email
+                      </button>
+                      <button type="button" disabled={cooldown > 0 || loading} onClick={() => sendCode()}
+                        className="text-primary hover:underline disabled:opacity-50 disabled:no-underline">
+                        {cooldown > 0 ? `Resend in ${cooldown}s` : "Resend code"}
+                      </button>
+                    </div>
+                  </>
                 )}
-
-                <Input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="email"
-                  className="rounded-lg border-border bg-card py-5 text-sm placeholder:text-muted-foreground"
-                  required
-                />
-
-                {!(isLogin && loginWithOtp) && (
+                <p className="text-center text-xs text-muted-foreground">
+                  <button type="button" onClick={() => { setMode("password"); setCodeStep("email"); setOtp(""); }} className="text-primary hover:underline">
+                    Use password instead
+                  </button>
+                </p>
+              </motion.form>
+            ) : isLogin ? (
+              <motion.form key="login" variants={formVariants} initial="hidden" animate="visible" exit="exit"
+                onSubmit={handleLogin} className="space-y-4">
+                <Input value={identifier} onChange={(e) => setIdentifier(e.target.value)} placeholder="Username or email"
+                  autoComplete="username" required maxLength={255} className="rounded-lg border-border bg-card py-5 text-sm placeholder:text-muted-foreground" />
                 <div className="relative">
-                  <Input
-                    type={showPassword ? "text" : "password"}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder={isLogin ? "password" : "create password (optional)"}
-                    className="rounded-lg border-border bg-card py-5 pr-16 text-sm placeholder:text-muted-foreground"
-                    required={isLogin}
-                    minLength={isLogin ? 6 : 0}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
-                  >
+                  <Input type={showPassword ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Password" autoComplete="current-password" required className="rounded-lg border-border bg-card py-5 text-sm placeholder:text-muted-foreground pr-16" />
+                  <button type="button" onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-muted-foreground hover:text-foreground">
                     {showPassword ? "Hide" : "Show"}
                   </button>
                 </div>
-                )}
-
                 <Button type="submit" className="w-full rounded-lg py-5 text-sm font-semibold" disabled={loading}>
-                  {loading ? "Please wait..." : isLogin ? (loginWithOtp ? "Email me a login code" : "Log in") : "Send verification code"}
+                  {loading ? "Please wait..." : "Log in"}
                 </Button>
-
-                {isLogin && (
-                  <div className="flex flex-col items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => setLoginWithOtp((v) => !v)}
-                      className="text-xs font-medium text-primary hover:underline"
-                    >
-                      {loginWithOtp ? "Use password instead" : "Log in with a one-time code"}
-                    </button>
-                    <p className="text-center text-xs text-muted-foreground">
-                      <Link to="/forgot-password" className="text-primary hover:underline">Forgot password?</Link>
-                    </p>
-                  </div>
-                )}
-
-                {!isLogin && (
-                  <p className="text-center text-xs text-muted-foreground leading-relaxed">
-                    By signing up you agree to our{" "}
-                    <span className="text-primary">Terms of Service</span> and{" "}
-                    <span className="text-primary">Privacy Policy</span>
-                  </p>
-                )}
+                <p className="text-center text-xs text-muted-foreground">
+                  <Link to="/forgot-password" className="text-primary hover:underline">Forgot password?</Link>
+                </p>
+                <p className="text-center text-xs text-muted-foreground">
+                  <button type="button" onClick={() => { setMode("code"); setCodeStep("email"); }} className="text-primary hover:underline">
+                    Log in with an email code instead
+                  </button>
+                </p>
+              </motion.form>
+            ) : (
+              <motion.form key="signup" variants={formVariants} initial="hidden" animate="visible" exit="exit"
+                onSubmit={handleSignup} className="space-y-3">
+                <Input value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })}
+                  placeholder="Full name" autoComplete="name" required maxLength={120} className="rounded-lg border-border bg-card py-5 text-sm placeholder:text-muted-foreground" />
+                <div>
+                  <Input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value.replace(/\s/g, "") })}
+                    placeholder="Username" autoComplete="username" required maxLength={30} className="rounded-lg border-border bg-card py-5 text-sm placeholder:text-muted-foreground" />
+                  {usernameFree === true && <p className="mt-1 text-xs text-primary">Username is available</p>}
+                  {usernameFree === false && <p className="mt-1 text-xs text-destructive">Username is taken</p>}
+                </div>
+                <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })}
+                  placeholder="Email" autoComplete="email" required maxLength={255} className="rounded-lg border-border bg-card py-5 text-sm placeholder:text-muted-foreground" />
+                <Input type="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                  placeholder="Phone number (e.g. +233 50 000 0000)" autoComplete="tel" required maxLength={20} className="rounded-lg border-border bg-card py-5 text-sm placeholder:text-muted-foreground" />
+                <div className="relative">
+                  <Input type={showPassword ? "text" : "password"} value={form.password}
+                    onChange={(e) => setForm({ ...form, password: e.target.value })}
+                    placeholder="Password" autoComplete="new-password" required maxLength={72} className="rounded-lg border-border bg-card py-5 text-sm placeholder:text-muted-foreground pr-16" />
+                  <button type="button" onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-muted-foreground hover:text-foreground">
+                    {showPassword ? "Hide" : "Show"}
+                  </button>
+                </div>
+                <ul className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
+                  {PW_RULES.map((r) => {
+                    const ok = r.test(form.password);
+                    return (
+                      <li key={r.label} className={`flex items-center gap-1 ${ok ? "text-primary" : "text-muted-foreground"}`}>
+                        {ok ? <Check size={11} /> : <X size={11} />} {r.label}
+                      </li>
+                    );
+                  })}
+                </ul>
+                <div>
+                  <Input type={showPassword ? "text" : "password"} value={form.repeat}
+                    onChange={(e) => setForm({ ...form, repeat: e.target.value })}
+                    placeholder="Repeat password" autoComplete="new-password" required maxLength={72} className="rounded-lg border-border bg-card py-5 text-sm placeholder:text-muted-foreground" />
+                  {form.repeat && form.repeat !== form.password && (
+                    <p className="mt-1 text-xs text-destructive">Passwords don't match</p>
+                  )}
+                </div>
+                <Button type="submit" className="w-full rounded-lg py-5 text-sm font-semibold" disabled={loading}>
+                  {loading ? "Creating your account..." : "Create account"}
+                </Button>
+                <p className="text-center text-xs leading-relaxed text-muted-foreground">
+                  By signing up you agree to our{" "}
+                  <Link to="/terms" className="text-primary hover:underline">Terms of Service</Link> and{" "}
+                  <Link to="/privacy" className="text-primary hover:underline">Privacy Policy</Link>
+                </p>
               </motion.form>
             )}
           </AnimatePresence>
